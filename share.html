@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>Shared Image Preview</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      text-align: center;
+      background: #f5f5f5;
+    }
+
+    img {
+      max-width: 100%;
+      border-radius: 16px;
+      margin-top: 20px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+
+    .box {
+      background: white;
+      padding: 20px;
+      border-radius: 16px;
+      max-width: 500px;
+      margin: auto;
+    }
+  </style>
+</head>
+<body>
+
+<div class="box">
+  <h2>🖼 Shared Image Preview</h2>
+
+  <img id="preview" hidden>
+
+  <p id="status">Waiting for shared image...</p>
+</div>
+
+<script>
+async function loadSharedImage() {
+  const params = new URLSearchParams(location.search);
+  const imageUrl = params.get('image');
+
+  if (imageUrl) {
+    const preview = document.getElementById('preview');
+    preview.src = imageUrl;
+    preview.hidden = false;
+
+    document.getElementById('status').textContent = 'Image received successfully';
+  }
+}
+
+loadSharedImage();
+</script>
+
+</body>
+</html>
