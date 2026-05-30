@@ -1,7 +1,25 @@
-// Register Service Worker for PWA
+// PWA Registration and Installation
+let deferredPrompt;
+const installBtn = document.getElementById('installBtn');
+
 if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js');
+    navigator.serviceWorker.register('./sw.js');
 }
+
+window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    installBtn.style.display = 'block';
+});
+
+installBtn.addEventListener('click', async () => {
+    if (deferredPrompt) {
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        if (outcome === 'accepted') installBtn.style.display = 'none';
+        deferredPrompt = null;
+    }
+});
 
 const UI = {
     token: document.getElementById('ghToken'),
@@ -9,40 +27,36 @@ const UI = {
     folder: document.getElementById('ghFolder'),
     fileInput: document.getElementById('fileInput'),
     uploadBtn: document.getElementById('uploadBtn'),
-    results: document.getElementById('results')
+    results: document.getElementById('results'),
+    toast: document.getElementById('toast')
 };
 
-// Load saved settings
+// Load History and Settings
+let uploadHistory = JSON.parse(localStorage.getItem('uploadHistory')) || [];
 UI.token.value = localStorage.getItem('ghToken') || '';
 UI.repo.value = localStorage.getItem('ghRepo') || '';
 UI.folder.value = localStorage.getItem('ghFolder') || '';
 
-// Save settings on change
 ['token', 'repo', 'folder'].forEach(id => {
     UI[id].addEventListener('input', (e) => localStorage.setItem(`gh${id.charAt(0).toUpperCase() + id.slice(1)}`, e.target.value));
 });
 
-// Check for files shared via Web Share Target (Intent)
+// Render existing history on load
 window.addEventListener('DOMContentLoaded', async () => {
+    renderHistory();
+    
     const urlParams = new URLSearchParams(window.location.search);
     if (urlParams.get('shared') === 'true') {
         const cache = await caches.open('shared-files-cache');
         const keys = await cache.keys();
         const filesToUpload = [];
-        
         for (const request of keys) {
             const response = await cache.match(request);
             const blob = await response.blob();
-            // Assign a random timestamp name for shared files
-            const file = new File([blob], `shared_img_${Date.now()}.jpg`, { type: blob.type });
-            filesToUpload.push(file);
-            await cache.delete(request); // Clean up cache
+            filesToUpload.push(new File([blob], `shared_img_${Date.now()}.jpg`, { type: blob.type }));
+            await cache.delete(request);
         }
-        
-        if(filesToUpload.length > 0) {
-            processUploads(filesToUpload);
-        }
-        // Clean URL
+        if(filesToUpload.length > 0) processUploads(filesToUpload);
         window.history.replaceState({}, document.title, window.location.pathname);
     }
 });
@@ -57,7 +71,7 @@ async function processUploads(files) {
     const repo = UI.repo.value.trim();
     let folder = UI.folder.value.trim();
     
-    if (!token || !repo) return alert('Token and Repository are required!');
+    if (!token || !repo) return alert('Token and Repository required!');
     if (folder && !folder.endsWith('/')) folder += '/';
 
     for (const file of files) {
@@ -69,56 +83,76 @@ async function uploadToGitHub(file, token, repo, folder) {
     const reader = new FileReader();
     reader.onloadend = async () => {
         const base64Content = reader.result.split(',')[1];
-        const path = `${folder}${file.name.replace(/\s+/g, '-')}`;
+        const path = `${folder}${Date.now()}-${file.name.replace(/\s+/g, '-')}`;
         const url = `https://api.github.com/repos/${repo}/contents/${path}`;
 
         try {
             const response = await fetch(url, {
                 method: 'PUT',
-                headers: {
-                    'Authorization': `token ${token}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    message: `Upload ${file.name} via PWA`,
-                    content: base64Content
-                })
+                headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: `Upload via PWA`, content: base64Content })
             });
 
             if (response.ok) {
-                // Ensure branch is correct, defaults to main for newer repos
                 const rawUrl = `https://raw.githubusercontent.com/${repo}/main/${path}`;
-                renderResult(rawUrl);
+                saveToHistory(rawUrl);
             } else {
                 const errorData = await response.json();
-                alert(`Upload failed: ${errorData.message}`);
+                alert(`Failed: ${errorData.message}`);
             }
         } catch (error) {
-            alert('Network error during upload');
+            alert('Network error');
         }
     };
     reader.readAsDataURL(file);
 }
 
-function renderResult(url) {
-    const item = document.createElement('div');
-    item.className = 'result-item';
+function saveToHistory(url) {
+    uploadHistory.unshift(url);
+    localStorage.setItem('uploadHistory', JSON.stringify(uploadHistory));
+    renderHistory();
+}
 
-    const img = document.createElement('img');
-    img.src = url;
+function renderHistory() {
+    UI.results.innerHTML = '';
+    uploadHistory.forEach(url => {
+        const markdownText = `![image](${url})`;
 
-    const markdownArea = document.createElement('textarea');
-    markdownArea.readOnly = true;
-    markdownArea.rows = 2;
-    markdownArea.value = `![image](${url})`;
+        const item = document.createElement('div');
+        item.className = 'result-item';
 
-    const directLinkArea = document.createElement('textarea');
-    directLinkArea.readOnly = true;
-    directLinkArea.rows = 1;
-    directLinkArea.value = url;
+        // Image Preview (Click to open)
+        const img = document.createElement('img');
+        img.src = url;
+        img.onclick = () => window.open(url, '_blank');
 
-    item.appendChild(img);
-    item.appendChild(markdownArea);
-    item.appendChild(directLinkArea);
-    UI.results.prepend(item);
+        const linksContainer = document.createElement('div');
+        linksContainer.className = 'links-container';
+
+        // Markdown Link (Click to copy)
+        const mdBox = document.createElement('p');
+        mdBox.className = 'link-box';
+        mdBox.innerText = markdownText;
+        mdBox.onclick = () => copyToClipboard(markdownText);
+
+        // Direct Link (Click to copy)
+        const directBox = document.createElement('p');
+        directBox.className = 'link-box';
+        directBox.innerText = url;
+        directBox.onclick = () => copyToClipboard(url);
+
+        linksContainer.appendChild(mdBox);
+        linksContainer.appendChild(directBox);
+        
+        item.appendChild(img);
+        item.appendChild(linksContainer);
+        UI.results.appendChild(item);
+    });
+}
+
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        UI.toast.style.opacity = '1';
+        setTimeout(() => { UI.toast.style.opacity = '0'; }, 2000);
+    });
 }
