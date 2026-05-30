@@ -50,12 +50,15 @@ window.addEventListener('DOMContentLoaded', async () => {
         const cache = await caches.open('shared-files-cache');
         const keys = await cache.keys();
         const filesToUpload = [];
-        for (const request of keys) {
-            const response = await cache.match(request);
+        
+        for (let i = 0; i < keys.length; i++) {
+            const response = await cache.match(keys[i]);
             const blob = await response.blob();
-            filesToUpload.push(new File([blob], `shared_img_${Date.now()}.jpg`, { type: blob.type }));
-            await cache.delete(request);
+            // Added index 'i' to guarantee unique names even if processed in the same millisecond
+            filesToUpload.push(new File([blob], `shared_${Date.now()}_${i}.jpg`, { type: blob.type }));
+            await cache.delete(keys[i]);
         }
+        
         if(filesToUpload.length > 0) processUploads(filesToUpload);
         window.history.replaceState({}, document.title, window.location.pathname);
     }
@@ -74,54 +77,62 @@ async function processUploads(files) {
     if (!token || !repo) return alert('Token and Repository required!');
     if (folder && !folder.endsWith('/')) folder += '/';
 
-    // Disable button to prevent double clicks during upload
     UI.uploadBtn.disabled = true;
-    UI.uploadBtn.innerText = 'Uploading...';
 
-    for (const file of files) {
-        await uploadToGitHub(file, token, repo, folder);
-        // Small artificial delay to ensure GitHub API state updates between commits
-        await new Promise(resolve => setTimeout(resolve, 500)); 
+    for (let i = 0; i < files.length; i++) {
+        UI.uploadBtn.innerText = `Uploading ${i + 1} of ${files.length}...`;
+        await uploadSingleFile(files[i], token, repo, folder, i);
+        
+        // Crucial 1-second delay to prevent GitHub branch head conflicts (409 Error)
+        if (i < files.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        }
     }
 
-    // Reset button
     UI.uploadBtn.disabled = false;
     UI.uploadBtn.innerText = 'Upload';
-    UI.fileInput.value = ''; // Clear file input
+    UI.fileInput.value = ''; 
 }
 
-// Wrapped in a Promise for strict sequential execution
-function uploadToGitHub(file, token, repo, folder) {
-    return new Promise((resolve, reject) => {
+async function uploadSingleFile(file, token, repo, folder, index) {
+    // 1. Read file to Base64 synchronously within a Promise
+    const base64Content = await new Promise((resolve) => {
         const reader = new FileReader();
-        reader.onloadend = async () => {
-            const base64Content = reader.result.split(',')[1];
-            const path = `${folder}${Date.now()}-${file.name.replace(/\s+/g, '-')}`;
-            const url = `https://api.github.com/repos/${repo}/contents/${path}`;
-
-            try {
-                const response = await fetch(url, {
-                    method: 'PUT',
-                    headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: `Upload via PWA`, content: base64Content })
-                });
-
-                if (response.ok) {
-                    const rawUrl = `https://raw.githubusercontent.com/${repo}/main/${path}`;
-                    saveToHistory(rawUrl);
-                    resolve(true); // Resolve promise to move to next file
-                } else {
-                    const errorData = await response.json();
-                    alert(`Failed for ${file.name}: ${errorData.message}`);
-                    resolve(false); // Resolve so it doesn't break the loop for other files
-                }
-            } catch (error) {
-                alert(`Network error during ${file.name} upload`);
-                resolve(false);
-            }
-        };
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
         reader.readAsDataURL(file);
     });
+
+    // 2. Guarantee absolute uniqueness in the file path
+    const safeName = file.name ? file.name.replace(/[^a-zA-Z0-9.-]/g, '_') : 'image.jpg';
+    const uniqueString = `${Date.now()}-${index}`;
+    const path = `${folder}${uniqueString}-${safeName}`;
+    const url = `https://api.github.com/repos/${repo}/contents/${path}`;
+
+    // 3. Upload to GitHub and wait for the response
+    try {
+        const response = await fetch(url, {
+            method: 'PUT',
+            headers: { 
+                'Authorization': `token ${token}`, 
+                'Content-Type': 'application/json' 
+            },
+            body: JSON.stringify({ 
+                message: `Upload ${safeName} via PWA`, 
+                content: base64Content 
+            })
+        });
+
+        if (response.ok) {
+            // 4. On success, add to history immediately
+            const rawUrl = `https://raw.githubusercontent.com/${repo}/main/${path}`;
+            saveToHistory(rawUrl);
+        } else {
+            const errorData = await response.json();
+            alert(`Failed for ${safeName}: ${errorData.message}`);
+        }
+    } catch (error) {
+        alert(`Network error during ${safeName} upload`);
+    }
 }
 
 function saveToHistory(url) {
@@ -138,7 +149,6 @@ function renderHistory() {
         const item = document.createElement('div');
         item.className = 'result-item';
 
-        // Image Preview (Click to open)
         const img = document.createElement('img');
         img.src = url;
         img.onclick = () => window.open(url, '_blank');
@@ -146,13 +156,11 @@ function renderHistory() {
         const linksContainer = document.createElement('div');
         linksContainer.className = 'links-container';
 
-        // Markdown Link (Click to copy)
         const mdBox = document.createElement('p');
         mdBox.className = 'link-box';
         mdBox.innerText = markdownText;
         mdBox.onclick = () => copyToClipboard(markdownText);
 
-        // Direct Link (Click to copy)
         const directBox = document.createElement('p');
         directBox.className = 'link-box';
         directBox.innerText = url;
