@@ -54,8 +54,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         for (let i = 0; i < keys.length; i++) {
             const response = await cache.match(keys[i]);
             const blob = await response.blob();
-            // Added index 'i' to guarantee unique names even if processed in the same millisecond
-            filesToUpload.push(new File([blob], `shared_${Date.now()}_${i}.jpg`, { type: blob.type }));
+            // Retain original filename if provided by the share intent, otherwise fallback
+            const fileName = blob.name || `shared_image_${i}.jpg`; 
+            filesToUpload.push(new File([blob], fileName, { type: blob.type }));
             await cache.delete(keys[i]);
         }
         
@@ -79,59 +80,114 @@ async function processUploads(files) {
 
     UI.uploadBtn.disabled = true;
 
-    for (let i = 0; i < files.length; i++) {
-        UI.uploadBtn.innerText = `Uploading ${i + 1} of ${files.length}...`;
-        await uploadSingleFile(files[i], token, repo, folder, i);
-        
-        // Crucial 1-second delay to prevent GitHub branch head conflicts (409 Error)
-        if (i < files.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-    }
-
-    UI.uploadBtn.disabled = false;
-    UI.uploadBtn.innerText = 'Upload';
-    UI.fileInput.value = ''; 
-}
-
-async function uploadSingleFile(file, token, repo, folder, index) {
-    // 1. Read file to Base64 synchronously within a Promise
-    const base64Content = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result.split(',')[1]);
-        reader.readAsDataURL(file);
-    });
-
-    // 2. Guarantee absolute uniqueness in the file path
-    const safeName = file.name ? file.name.replace(/[^a-zA-Z0-9.-]/g, '_') : 'image.jpg';
-    const uniqueString = `${Date.now()}-${index}`;
-    const path = `${folder}${uniqueString}-${safeName}`;
-    const url = `https://api.github.com/repos/${repo}/contents/${path}`;
-
-    // 3. Upload to GitHub and wait for the response
     try {
-        const response = await fetch(url, {
-            method: 'PUT',
-            headers: { 
-                'Authorization': `token ${token}`, 
-                'Content-Type': 'application/json' 
-            },
-            body: JSON.stringify({ 
-                message: `Upload ${safeName} via PWA`, 
-                content: base64Content 
+        UI.uploadBtn.innerText = 'Connecting...';
+        
+        // Step A: Get repository default branch
+        let branch = 'main';
+        const repoReq = await fetch(`https://api.github.com/repos/${repo}`, {
+            headers: { 'Authorization': `token ${token}` }
+        });
+        if (repoReq.ok) {
+            const repoData = await repoReq.json();
+            branch = repoData.default_branch;
+        }
+
+        // Step B: Get latest commit SHA
+        const refReq = await fetch(`https://api.github.com/repos/${repo}/git/refs/heads/${branch}`, {
+            headers: { 'Authorization': `token ${token}` }
+        });
+        if (!refReq.ok) throw new Error("Could not fetch branch reference.");
+        const refData = await refReq.json();
+        const latestCommitSha = refData.object.sha;
+
+        // Step C: Get base tree SHA
+        const commitReq = await fetch(`https://api.github.com/repos/${repo}/git/commits/${latestCommitSha}`, {
+            headers: { 'Authorization': `token ${token}` }
+        });
+        const commitData = await commitReq.json();
+        const baseTreeSha = commitData.tree.sha;
+
+        // Step D: Upload blobs (No commit conflicts here)
+        const treeItems = [];
+        for (let i = 0; i < files.length; i++) {
+            UI.uploadBtn.innerText = `Uploading file ${i + 1}/${files.length}...`;
+            const file = files[i];
+            
+            const base64Content = await new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                reader.readAsDataURL(file);
+            });
+
+            // STRICTLY USE ORIGINAL FILENAME
+            const path = `${folder}${file.name}`;
+
+            const blobReq = await fetch(`https://api.github.com/repos/${repo}/git/blobs`, {
+                method: 'POST',
+                headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content: base64Content, encoding: 'base64' })
+            });
+            
+            if (!blobReq.ok) throw new Error(`Failed to upload blob for ${file.name}`);
+            const blobData = await blobReq.json();
+
+            treeItems.push({
+                path: path,
+                mode: '100644',
+                type: 'blob',
+                sha: blobData.sha
+            });
+        }
+
+        UI.uploadBtn.innerText = 'Finalizing...';
+
+        // Step E: Create Tree
+        const newTreeReq = await fetch(`https://api.github.com/repos/${repo}/git/trees`, {
+            method: 'POST',
+            headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base_tree: baseTreeSha, tree: treeItems })
+        });
+        const newTreeData = await newTreeReq.json();
+
+        // Step F: Create Commit
+        const newCommitReq = await fetch(`https://api.github.com/repos/${repo}/git/commits`, {
+            method: 'POST',
+            headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: `Uploaded ${files.length} images via App`,
+                tree: newTreeData.sha,
+                parents: [latestCommitSha]
             })
         });
+        const newCommitData = await newCommitReq.json();
 
-        if (response.ok) {
-            // 4. On success, add to history immediately
-            const rawUrl = `https://raw.githubusercontent.com/${repo}/main/${path}`;
-            saveToHistory(rawUrl);
+        // Step G: Update Branch Ref
+        const updateRefReq = await fetch(`https://api.github.com/repos/${repo}/git/refs/heads/${branch}`, {
+            method: 'PATCH',
+            headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sha: newCommitData.sha })
+        });
+
+        if (updateRefReq.ok) {
+            // Success
+            treeItems.reverse().forEach(item => {
+                // Encode the path to handle spaces in original filenames properly in URLs
+                const encodedPath = encodeURI(item.path);
+                const rawUrl = `https://raw.githubusercontent.com/${repo}/${branch}/${encodedPath}`;
+                saveToHistory(rawUrl);
+            });
         } else {
-            const errorData = await response.json();
-            alert(`Failed for ${safeName}: ${errorData.message}`);
+            throw new Error("Failed to update branch reference.");
         }
+
     } catch (error) {
-        alert(`Network error during ${safeName} upload`);
+        console.error(error);
+        alert(`Error: ${error.message}`);
+    } finally {
+        UI.uploadBtn.disabled = false;
+        UI.uploadBtn.innerText = 'Upload';
+        UI.fileInput.value = '';
     }
 }
 
