@@ -8,14 +8,18 @@
     <style>
         body { font-family: monospace; background-color: #000000; color: #ffffff; padding: 15px; margin: 0; }
         .top-bar { display: flex; justify-content: space-between; align-items: center; }
-        input, button { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; background: #1a1a1a; color: #fff; border: 1px solid #333; }
+        input, button, select { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; background: #1a1a1a; color: #fff; border: 1px solid #333; }
         button { background: #2ea44f; cursor: pointer; border: none; font-weight: bold; }
         #installBtn { display: none; background: #0366d6; width: auto; padding: 5px 15px; }
         
         /* Compact History List Styles */
         .result-list { margin-top: 20px; display: flex; flex-direction: column; }
-        .result-item { display: flex; align-items: center; gap: 15px; padding: 15px 0; border-bottom: 1px solid #222; }
-        .result-item img { width: 120px; height: 120px; object-fit: contain; background: #111; cursor: pointer; border: 1px solid #333; }
+        .result-item { display: flex; align-items: center; gap: 15px; padding: 15px 0; border-bottom: 1px solid #222; position: relative; }
+        
+        /* Preview container for both images and files */
+        .preview-box { width: 120px; height: 120px; background: #111; border: 1px solid #333; display: flex; align-items: center; justify-content: center; cursor: pointer; overflow: hidden; flex-shrink: 0;}
+        .preview-box img { width: 100%; height: 100%; object-fit: contain; }
+        .preview-box .file-icon { font-size: 24px; color: #88ccff; }
         
         .links-container { display: flex; flex-direction: column; gap: 10px; flex-grow: 1; overflow: hidden; }
         .link-box { background: #000; color: #fff; border: none; font-family: monospace; cursor: pointer; font-size: 13px; word-break: break-all; margin: 0; padding: 0;}
@@ -29,12 +33,15 @@
         <h2>Uploader</h2>
         <button id="installBtn">Install App</button>
     </div>
-    <div class="top-bar">
-        <p><code>File</code>, <code>Temp</code>, <code>img</code></p>
-    </div>
+
     <input type="password" id="ghToken" placeholder="GitHub PAT (repo scope)">
     <input type="text" id="ghRepo" placeholder="owner/repo">
     <input type="text" id="ghFolder" placeholder="Folder path (optional)">
+
+    <select id="uploadType">
+        <option value="image/*">Images Only</option>
+        <option value="*/*">Any File Format</option>
+    </select>
 
     <input type="file" id="fileInput" multiple accept="image/*">
     <button id="uploadBtn">Upload</button>
