@@ -63,7 +63,22 @@ window.addEventListener('DOMContentLoaded', async () => {
         for (let i = 0; i < keys.length; i++) {
             const response = await cache.match(keys[i]);
             const blob = await response.blob();
-            const fileName = blob.name || `shared_file_${i}`; 
+            
+            // Generate filename with correct extension based on MIME type
+            let fileName = blob.name;
+            if (!fileName || !fileName.includes('.')) {
+                let ext = '.jpg'; // Default fallback
+                if (blob.type) {
+                    if (blob.type.includes('jpeg')) ext = '.jpg';
+                    else if (blob.type.includes('png')) ext = '.png';
+                    else if (blob.type.includes('gif')) ext = '.gif';
+                    else if (blob.type.includes('webp')) ext = '.webp';
+                    else if (blob.type.includes('mp4')) ext = '.mp4';
+                    else ext = `.${blob.type.split('/')[1]}`;
+                }
+                fileName = `shared_file_${i}${ext}`;
+            }
+            
             filesToUpload.push(new File([blob], fileName, { type: blob.type }));
             await cache.delete(keys[i]);
         }
