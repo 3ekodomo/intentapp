@@ -25,21 +25,30 @@ const UI = {
     token: document.getElementById('ghToken'),
     repo: document.getElementById('ghRepo'),
     folder: document.getElementById('ghFolder'),
+    uploadType: document.getElementById('uploadType'), // New Select Element
     fileInput: document.getElementById('fileInput'),
     uploadBtn: document.getElementById('uploadBtn'),
     results: document.getElementById('results'),
     toast: document.getElementById('toast')
 };
 
-let isUploading = false; // Prevents overlapping uploads
+let isUploading = false; 
 let uploadHistory = JSON.parse(localStorage.getItem('uploadHistory')) || [];
 
 UI.token.value = localStorage.getItem('ghToken') || '';
 UI.repo.value = localStorage.getItem('ghRepo') || '';
 UI.folder.value = localStorage.getItem('ghFolder') || '';
+UI.uploadType.value = localStorage.getItem('ghUploadType') || 'image/*';
+UI.fileInput.accept = UI.uploadType.value; // Set initial accept attribute
 
 ['token', 'repo', 'folder'].forEach(id => {
     UI[id].addEventListener('input', (e) => localStorage.setItem(`gh${id.charAt(0).toUpperCase() + id.slice(1)}`, e.target.value));
+});
+
+// Update accept attribute and save preference when dropdown changes
+UI.uploadType.addEventListener('change', (e) => {
+    UI.fileInput.accept = e.target.value;
+    localStorage.setItem('ghUploadType', e.target.value);
 });
 
 window.addEventListener('DOMContentLoaded', async () => {
@@ -54,7 +63,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         for (let i = 0; i < keys.length; i++) {
             const response = await cache.match(keys[i]);
             const blob = await response.blob();
-            const fileName = blob.name || `shared_image_${i}.jpg`; 
+            const fileName = blob.name || `shared_file_${i}`; 
             filesToUpload.push(new File([blob], fileName, { type: blob.type }));
             await cache.delete(keys[i]);
         }
@@ -92,7 +101,7 @@ async function processUploads(files) {
         }
 
         const treeItems = [];
-        const usedPaths = new Set(); // To prevent duplicate name conflicts in the same batch
+        const usedPaths = new Set(); 
 
         for (let i = 0; i < files.length; i++) {
             UI.uploadBtn.innerText = `Uploading file ${i + 1}/${files.length}...`;
@@ -104,15 +113,14 @@ async function processUploads(files) {
                 reader.readAsDataURL(file);
             });
 
-            // Handle filename collisions safely
-            let safeName = file.name || 'image.jpg';
+            let safeName = file.name || 'upload_file';
             let path = `${folder}${safeName}`;
             let counter = 1;
             while(usedPaths.has(path)) {
                 const nameParts = safeName.split('.');
-                const ext = nameParts.pop();
+                const ext = nameParts.length > 1 ? `.${nameParts.pop()}` : '';
                 const base = nameParts.join('.');
-                path = `${folder}${base}(${counter}).${ext}`;
+                path = `${folder}${base}(${counter})${ext}`;
                 counter++;
             }
             usedPaths.add(path);
@@ -131,13 +139,11 @@ async function processUploads(files) {
 
         UI.uploadBtn.innerText = 'Finalizing...';
 
-        // Auto-Retry Logic for 409 Conflicts
         let retries = 3;
         let success = false;
 
         while (retries > 0 && !success) {
             try {
-                // Always fetch the freshest commit SHA right before committing
                 const refReq = await fetch(`https://api.github.com/repos/${repo}/git/refs/heads/${branch}`, { headers: { 'Authorization': `token ${token}` } });
                 const latestCommitSha = (await refReq.json()).object.sha;
 
@@ -154,7 +160,7 @@ async function processUploads(files) {
                 const newCommitReq = await fetch(`https://api.github.com/repos/${repo}/git/commits`, {
                     method: 'POST',
                     headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: `Uploaded ${files.length} images via App`, tree: newTreeData.sha, parents: [latestCommitSha] })
+                    body: JSON.stringify({ message: `Uploaded ${files.length} files via App`, tree: newTreeData.sha, parents: [latestCommitSha] })
                 });
                 const newCommitData = await newCommitReq.json();
 
@@ -172,8 +178,7 @@ async function processUploads(files) {
                     });
                 } else if (updateRefReq.status === 409) {
                     retries--;
-                    console.log(`409 Conflict encountered. Retrying... (${retries} attempts left)`);
-                    await new Promise(r => setTimeout(r, 1000)); // Wait 1 second before retry
+                    await new Promise(r => setTimeout(r, 1000));
                 } else {
                     throw new Error("Failed to update branch reference.");
                 }
@@ -208,18 +213,38 @@ function deleteFromHistory(index) {
     renderHistory();
 }
 
+// Helper to check if file is an image based on URL extension
+function isImageFile(url) {
+    return /\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?.*)?$/i.test(url);
+}
+
 function renderHistory() {
     UI.results.innerHTML = '';
     uploadHistory.forEach((url, index) => {
-        const markdownText = `![image](${url})`;
-
         const item = document.createElement('div');
         item.className = 'result-item';
-        item.style.position = 'relative'; // Allows absolute positioning of the delete button
 
-        const img = document.createElement('img');
-        img.src = url;
-        img.onclick = () => window.open(url, '_blank');
+        const isImg = isImageFile(url);
+        const fileName = url.split('/').pop();
+        
+        // Generate proper Markdown: ![image](url) for images, [filename](url) for other files
+        const markdownText = isImg ? `![image](${url})` : `[${decodeURI(fileName)}](${url})`;
+
+        // Preview Box Setup
+        const previewBox = document.createElement('div');
+        previewBox.className = 'preview-box';
+        previewBox.onclick = () => window.open(url, '_blank');
+
+        if (isImg) {
+            const img = document.createElement('img');
+            img.src = url;
+            previewBox.appendChild(img);
+        } else {
+            const fileIcon = document.createElement('div');
+            fileIcon.className = 'file-icon';
+            fileIcon.innerText = '📄 File';
+            previewBox.appendChild(fileIcon);
+        }
 
         const linksContainer = document.createElement('div');
         linksContainer.className = 'links-container';
@@ -234,16 +259,15 @@ function renderHistory() {
         directBox.innerText = url;
         directBox.onclick = () => copyToClipboard(url);
         
-        // Delete Button Setup
         const deleteBtn = document.createElement('button');
         deleteBtn.innerText = '❌';
-        deleteBtn.style.cssText = 'position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); border: 1px solid #444; border-radius: 5px; cursor: pointer; color: white; padding: 5px 8px; width: auto; font-size: 12px;';
+        deleteBtn.style.cssText = 'position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); border: 1px solid #444; border-radius: 5px; cursor: pointer; color: white; padding: 5px 8px; width: auto; font-size: 12px; z-index: 2;';
         deleteBtn.onclick = () => deleteFromHistory(index);
 
         linksContainer.appendChild(mdBox);
         linksContainer.appendChild(directBox);
         
-        item.appendChild(img);
+        item.appendChild(previewBox);
         item.appendChild(linksContainer);
         item.appendChild(deleteBtn);
         UI.results.appendChild(item);
