@@ -74,37 +74,54 @@ async function processUploads(files) {
     if (!token || !repo) return alert('Token and Repository required!');
     if (folder && !folder.endsWith('/')) folder += '/';
 
+    // Disable button to prevent double clicks during upload
+    UI.uploadBtn.disabled = true;
+    UI.uploadBtn.innerText = 'Uploading...';
+
     for (const file of files) {
         await uploadToGitHub(file, token, repo, folder);
+        // Small artificial delay to ensure GitHub API state updates between commits
+        await new Promise(resolve => setTimeout(resolve, 500)); 
     }
+
+    // Reset button
+    UI.uploadBtn.disabled = false;
+    UI.uploadBtn.innerText = 'Upload';
+    UI.fileInput.value = ''; // Clear file input
 }
 
-async function uploadToGitHub(file, token, repo, folder) {
-    const reader = new FileReader();
-    reader.onloadend = async () => {
-        const base64Content = reader.result.split(',')[1];
-        const path = `${folder}${Date.now()}-${file.name.replace(/\s+/g, '-')}`;
-        const url = `https://api.github.com/repos/${repo}/contents/${path}`;
+// Wrapped in a Promise for strict sequential execution
+function uploadToGitHub(file, token, repo, folder) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+            const base64Content = reader.result.split(',')[1];
+            const path = `${folder}${Date.now()}-${file.name.replace(/\s+/g, '-')}`;
+            const url = `https://api.github.com/repos/${repo}/contents/${path}`;
 
-        try {
-            const response = await fetch(url, {
-                method: 'PUT',
-                headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: `Upload via PWA`, content: base64Content })
-            });
+            try {
+                const response = await fetch(url, {
+                    method: 'PUT',
+                    headers: { 'Authorization': `token ${token}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: `Upload via PWA`, content: base64Content })
+                });
 
-            if (response.ok) {
-                const rawUrl = `https://raw.githubusercontent.com/${repo}/main/${path}`;
-                saveToHistory(rawUrl);
-            } else {
-                const errorData = await response.json();
-                alert(`Failed: ${errorData.message}`);
+                if (response.ok) {
+                    const rawUrl = `https://raw.githubusercontent.com/${repo}/main/${path}`;
+                    saveToHistory(rawUrl);
+                    resolve(true); // Resolve promise to move to next file
+                } else {
+                    const errorData = await response.json();
+                    alert(`Failed for ${file.name}: ${errorData.message}`);
+                    resolve(false); // Resolve so it doesn't break the loop for other files
+                }
+            } catch (error) {
+                alert(`Network error during ${file.name} upload`);
+                resolve(false);
             }
-        } catch (error) {
-            alert('Network error');
-        }
-    };
-    reader.readAsDataURL(file);
+        };
+        reader.readAsDataURL(file);
+    });
 }
 
 function saveToHistory(url) {
